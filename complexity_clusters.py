@@ -35,13 +35,15 @@ def compute_cocitation_probability_matrix(
     n_markers = len(markers)
     cm_counts = np.zeros((n_markers, n_markers), dtype=np.int64)
 
-    # total unique articles
-    n_articles = int(df["id"].n_unique())
-    logger.info("Total unique articles: %d", n_articles)
 
     # filter rows to selected markers and group markers per article
     df_filtered = df.filter(pl.col("marker").is_in(markers))
     df_grouped = df_filtered.group_by("id").agg(pl.col("marker").unique().alias("markers"))
+
+    # total unique articles
+    n_articles = int(df_filtered["id"].n_unique())
+    logger.info("Computing cocitation counts for %d entries, %d markers, %d articles", 
+                len(df_filtered), df_filtered["marker"].n_unique(), df_filtered["id"].n_unique())
 
     conv_local = conv
     for marker_list in tqdm(df_grouped["markers"].to_list(), desc="computing cocitation counts"):
@@ -103,12 +105,16 @@ def prepare_filtered_marker_table(path: Path, list_themes: Optional[List[str]] =
     publishers = pl.read_csv("CausalityLinkPublishers.csv")
     journaux_themes = pd.read_csv("journaux_themes.csv", index_col=0).to_dict()["theme"]
 
+    logger.info("Initial marker table: %d entries, %d markers, %d articles", 
+                len(markerTable.df), markerTable.df["marker"].n_unique(), markerTable.df["id"].n_unique())
+
     # filter markers with no country information in treeTable
     markers_filter = treeTable.df.filter(pl.col("country").is_null())
     markers_filter = markers_filter["marker"].to_list()
     filtered_marker_df = markerTable.df.filter(pl.col("marker").is_in(markers_filter))
-
-
+    
+    logger.info("After tree & country filter: %d entries, %d markers, %d articles", 
+                len(filtered_marker_df), filtered_marker_df["marker"].n_unique(), filtered_marker_df["id"].n_unique())
 
     # add publisher information to marker table
     filtered_marker_df = filtered_marker_df.with_columns(
@@ -118,12 +124,18 @@ def prepare_filtered_marker_table(path: Path, list_themes: Optional[List[str]] =
         publishers.select("publisher", "label"), left_on="publisher_id", right_on="publisher", how="left"
     )
     filtered_marker_df = filtered_marker_df.filter(pl.col("label").is_not_null()).rename({"label": "publisher_label"})
+    
+    logger.info("After publisher join: %d entries, %d markers, %d articles", 
+                len(filtered_marker_df), filtered_marker_df["marker"].n_unique(), filtered_marker_df["id"].n_unique())
+    
     filtered_marker_df = filtered_marker_df.with_columns(
         pl.col("publisher_label").replace(journaux_themes).alias("journal_theme")
     )
 
     if list_themes is not None:
         filtered_marker_df = filtered_marker_df.filter(pl.col("journal_theme").is_in(list_themes))
+        logger.info("After theme filter: %d entries, %d markers, %d articles", 
+                    len(filtered_marker_df), filtered_marker_df["marker"].n_unique(), filtered_marker_df["id"].n_unique())
 
     return filtered_marker_df
 
@@ -214,7 +226,8 @@ def compute_latent_and_cluster(lift_matrix: np.ndarray, selected_markers: np.nda
     epsilon = 1e-4
     velocities = np.array([lift_matrix[i, i] ** (-1) if lift_matrix[i, i] > 0 else np.nan for i in range(len(lift_matrix))])
     # safeguard and produce a symmetric non-negative distance matrix
-    distance_matrix = np.log1p((lift_matrix + epsilon) ** (-1) - velocities[:, None])
+    distance_matrix = np.log1p((lift_matrix + epsilon) ** (-1))
+    distance_matrix[np.diag_indices_from(distance_matrix)] = 0
     distance_matrix = (distance_matrix + distance_matrix.T) / 2.0
     distance_matrix -= distance_matrix.min()
 
