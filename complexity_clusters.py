@@ -1,6 +1,6 @@
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple,Any
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -15,6 +15,8 @@ from umap import UMAP  # pip install umap-learn
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+
+
 
 
 def compute_cocitation_probability_matrix(
@@ -140,8 +142,8 @@ def prepare_filtered_marker_table(path: Path, list_themes: Optional[List[str]] =
     return filtered_marker_df
 
 
-def select_markers_by_theme(filtered_marker_df: pl.DataFrame, themes: Optional[List[str]] = None, fraction: float = 1 / 3, top : bool = True) -> Tuple[np.ndarray, Dict[str, int]]:
-    """Select markers appearing in given journal themes and return markers array and conv mapping.
+def select_markers_by_theme(filtered_marker_df: pl.DataFrame, themes: Optional[List[str]] = None, fraction: float = 1/3, top : bool = True) -> Tuple[np.ndarray, Dict[str, int], np.ndarray]:
+    """Select markers appearing in given journal themes and return markers array, conv mapping, and associated journals array.
 
     Args:
         filtered_marker_df: Polars DataFrame with `journal_theme` and `marker` columns.
@@ -158,14 +160,25 @@ def select_markers_by_theme(filtered_marker_df: pl.DataFrame, themes: Optional[L
         .group_by("marker")
         .agg(pl.col("publisher_label").unique().alias("publishers_label"), pl.col("marker").count().alias("marker_count"))
     )
+    
     keep_n = max(1, int(len(selected_markers_df) * fraction))
+    
     if top:
         selected_markers_df = selected_markers_df.sort("marker_count", descending=True).head(keep_n)
     else:
         selected_markers_df = selected_markers_df.sample(keep_n, shuffle=True)
-    markers_journals = np.array(selected_markers_df["publishers_label"].to_list())
+        
+    # --- START OF FIX ---
+    # The 'publishers_label' column contains lists of varying length (inhomogeneous shape).
+    # We must explicitly tell NumPy to create an array of Python objects (dtype=object)
+    # to store these lists without raising a ValueError.
+    markers_journals_list = selected_markers_df["publishers_label"].to_list()
+    markers_journals = np.array(markers_journals_list, dtype=object)
+    # --- END OF FIX ---
+    
     selected_markers = np.array(selected_markers_df["marker"].to_list())
     conv = {selected_markers[k]: int(k) for k in range(len(selected_markers))}
+    
     return selected_markers, conv, markers_journals
 
 
@@ -217,7 +230,7 @@ def plot_complexity_vs_velocity(
 
 
 def compute_latent_and_cluster(lift_matrix: np.ndarray, selected_markers: np.ndarray, markers_journals: np.ndarray, out_prefix: str = "projection_2d",
-                               eps_dbscan: float = 0.10, min_samples_dbscan: int = 20) -> Tuple[np.ndarray, np.ndarray]:
+                               eps_dbscan: float = 0.07, min_samples_dbscan: int = 10) -> Tuple[np.ndarray, np.ndarray]:
     """Compute latent 2D embedding (UMAP) from lift matrix-derived distances and run DBSCAN clustering.
 
     Saves projection and projection with DBSCAN into PNG files with given prefix.
@@ -318,7 +331,7 @@ def run_all(root: Path = Path("/Data/rc/data/causalitylink_sample")) -> None:
     list_themes = ["sante", "economie", "sport", "politique", "transport", "information"]
     filtered_marker_df = prepare_filtered_marker_table(root,None)
 
-    selected_markers, conv, markers_journals = select_markers_by_theme(filtered_marker_df, list_themes, fraction= 1 / 3)
+    selected_markers, conv, markers_journals = select_markers_by_theme(filtered_marker_df, list_themes, fraction= 1/2)
 
     logger.info("Computing cocitation probabilities for %d markers", len(selected_markers))
     cocitation_matrix = compute_cocitation_probability_matrix(selected_markers, filtered_marker_df, conv)
